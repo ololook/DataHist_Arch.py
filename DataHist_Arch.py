@@ -116,7 +116,7 @@ class sour_inst(object):
                 rows=cur.fetchmany(500)
           conn.close()
       @classmethod
-      def del_pri  (self,host,port,dbname,tablename,sid,rowin):
+      def del_pri  (cls,host,port,dbname,tablename,sid,rowin):
           sqlcmd="""SELECT cols.column_name,cols.position 
                 FROM all_constraints cons, all_cons_columns cols
                 WHERE cols.table_name = upper('%s')
