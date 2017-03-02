@@ -36,6 +36,10 @@ def get_cli_options():
                       default="31",
                       metavar="31"
                      )
+    parser.add_option("-m", "--bat",dest="batch",
+                      default=500,
+                      metavar=500
+                     )
     (options, args) = parser.parse_args()
     return options
 
@@ -55,11 +59,12 @@ class pub_parameter(object):
         f_sid =options.f_sid
         t_sid =options.t_sid
         f_c   =options.col
-        f_d   =pub_parameter.parse_date(int(options.days))          
-        return source,f_sid,f_d,f_c,destin,t_sid
+        f_d   =pub_parameter.parse_date(int(options.days))
+        f_b   =options.batch       
+        return source,f_sid,f_d,f_c,destin,t_sid,f_b
       
 class sour_inst(object):
-      def __init__ (self,host,port,dbname,tablename,sid,colname,dt):
+      def __init__ (self,host,port,dbname,tablename,sid,colname,dt,batch):
          self.host=host
          self.port=port
          self.db  =dbname
@@ -67,6 +72,7 @@ class sour_inst(object):
          self.col =colname
          self.sid =sid
          self.dt  =dt
+         self.batch=batch
       def dict_sql(self):
           sqls="""SELECT cols.column_name,cols.position 
                 FROM all_constraints cons, all_cons_columns cols
@@ -82,6 +88,7 @@ class sour_inst(object):
              conn = cx_Oracle.connect('username','passwd',dsn_tns)
           except cx_Oracle.DatabaseError as e:
               print "init connect source database .... ",e
+              exit()
           return conn
       def Is_pri   (self):
           conn=self.Get_con()
@@ -92,6 +99,7 @@ class sour_inst(object):
             cur.fetchall()
           except cx_Oracle.DatabaseError as e:
             print "execute sql get primary key is error ",e
+            exit()
           #print cur.rowcount 
           if cur.rowcount==0:
              print "no primary key "
@@ -101,22 +109,24 @@ class sour_inst(object):
               print "primary check pass!!!"
           else:
               print  "not support primary key"
+              exit()
       def out_data (self):
-          sqlcmd="select * from %s.%s  where %s<'%s'" %(self.db,self.tb,self.col,self.dt)
+          sqlcmd="select * from %s.%s  where %s<'2016061112415'" %(self.db,self.tb,self.col)
           conn=self.Get_con()
           cur=conn.cursor()
+          B=int(self.batch)
           try:
             pass
             cur.execute(sqlcmd)
           except cx_Oracle.DatabaseError as e:
             print "fetch table rows ",e
-          rows=cur.fetchmany(500)
+          rows=cur.fetchmany(B)
           while rows:
                 yield rows
-                rows=cur.fetchmany(500)
+                rows=cur.fetchmany(B)
           conn.close()
       @classmethod
-      def del_pri  (cls,host,port,dbname,tablename,sid,rowin):
+      def del_pri  (self,host,port,dbname,tablename,sid,rowin):
           sqlcmd="""SELECT cols.column_name,cols.position 
                 FROM all_constraints cons, all_cons_columns cols
                 WHERE cols.table_name = upper('%s')
@@ -129,6 +139,7 @@ class sour_inst(object):
              conn = cx_Oracle.connect('username','passwd',dsn_tns)
           except cx_Oracle.DatabaseError as e:
               print "init connect source database .... ",e 
+              exit()
           cursor=conn.cursor()
           duparry=[]
           dict={}
@@ -148,8 +159,13 @@ class sour_inst(object):
                   duparry.append(r1[val-1])
                   exe_sql= del_sql
                   del_sql="""delete from %s.%s where 1=1 """ %(dbname,tablename)
-          cursor.prepare(exe_sql)
-          cursor.executemany(None, [(v,) for v in duparry])
+          try:
+             cursor.prepare(exe_sql)
+             cursor.executemany(None, [(v,) for v in duparry])
+          except cx_Oracle.DatabaseError as e:
+             print "delete fail"
+             cursor.execute('rollback')
+             exit()
           cursor.execute('commit')
           duparry=[]
           conn.close()
@@ -172,6 +188,7 @@ class dest_inst(object):
              conn = cx_Oracle.connect('username','passwd',dsn_tns)
          except cx_Oracle.DatabaseError as e:
              print "init connect source database .... ",e
+             exit()
          return conn
       
       def Gen_batch  (self):
@@ -195,13 +212,17 @@ class dest_inst(object):
            insert_table=insert+row+' '+')'+' '+'values'+' '+ncol+')'
            conn.close()
            return insert_table
-      def insert_row(self,row):
+      def insert_row(self,row,batch):
+           cnt=0
            rowlist=[]
            dellist=[]
            sqlcmd=self.Gen_batch()
            conn=self.Get_con()
            cursor=conn.cursor()
            for r1 in row:
+               dt=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+               cnt=cnt+1
+               print "%s commit rows  %d" % (dt,cnt*batch)
                for rows in r1:
                    rowlist.append(rows)
                try:
@@ -210,10 +231,11 @@ class dest_inst(object):
                except cx_Oracle.DatabaseError as e:
                  print "insert data error" ,e
                  cursor.execute('rollback')
+                 exit()
                dellist=rowlist
                rowlist=[]
                cursor.execute('commit')
-               sour_inst.del_pri(self.s_host,self.port,self.s_db,self.s_tb,self.s_sid,dellist)
+               sour_inst.del_pri(self.s_host,self.s_port,self.s_db,self.s_tb,self.s_sid,dellist)
                dellist=[]
            conn.close()
 
@@ -222,13 +244,13 @@ class  action(object):
          self.type=type
      def pares_para(self):
          source_connectstring,source_sid,source_day,source_colname,\
-         destination_connectstring,destination_sid=pub_parameter.parse_options()
+         destination_connectstring,destination_sid,batch=pub_parameter.parse_options()
          source_IP,source_port,source_dbname,source_table=source_connectstring.split(":")
          destination_host,destination_port,destination_dbname,\
          destination_table=destination_connectstring.split(":")
          if self.type.lower()=='source':
             return source_IP,source_port,source_dbname,\
-                   source_table,source_sid,source_colname,source_day
+                   source_table,source_sid,source_colname,source_day,batch
          elif self.type.lower()=='destination':
             return destination_host,destination_port,\
                    destination_dbname,destination_table,destination_sid
@@ -236,16 +258,18 @@ def main():
      get_cli_options()
      source=action('source')
      destina=action('destination')
-     sp1,sp2,sp3,sp4,sp5,sp6,sp7=source.pares_para()
+     sp1,sp2,sp3,sp4,sp5,sp6,sp7,sp8=source.pares_para()
      dp1,dp2,dp3,dp4,dp5=destina.pares_para()
-     ss=sour_inst(sp1,sp2,sp3,sp4,sp5,sp6,sp7) 
+     ss=sour_inst(sp1,sp2,sp3,sp4,sp5,sp6,sp7,sp8) 
      dd=dest_inst(dp1,dp2,dp3,dp4,dp5,sp1,sp2,sp3,sp4,sp5)
      ss.Is_pri()
-     dd.insert_row(ss.out_data())
+     dd.insert_row(ss.out_data(),int(sp8))
 if __name__ == '__main__':
      main()
 	 
-	 使用方法：
-	 python DataHist_Arch.py --f_dsn="IP:port:dbname:tablename" --t_dsn="IP:port:dbname:tablename" --f_sid="Oracle_SID" --t_sid="Oracle_SID" --col="colname" --d="天数"
-	 迁移删除规则:
-	 where colname<=colname-天数
+使用方法：
+python DataHist_Arch.py --f_dsn="IP:port:dbname:tablename" --t_dsn="IP:port:dbname:tablename" --f_sid="Oracle_SID" --t_sid="Oracle_SID" --col="colname" --d="天数"
+迁移删除规则:
+where colname<=colname-天数
+
+1.增加bat参数，用于控制每次批量大小默认500条!
